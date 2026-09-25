@@ -106,6 +106,69 @@ You may also choose to hide the conference call icon in either channels or priva
 ### Running your own conference server
 Running your own conference server allows you to secure your conference rooms. We make use of the Jitsi Meet server to handle the conference calls, the installation steps can be found here: https://github.com/jitsi/jitsi-meet/blob/master/doc/quick-install.md
 
+### Self-hosted Jitsi via docker-jitsi-meet (fork addition)
+This section documents a known-working setup for pointing this plugin at your
+own [jitsi/docker-jitsi-meet](https://github.com/jitsi/docker-jitsi-meet)
+instance, reverse-proxied through Apache/nginx (e.g. behind Cloudflare) rather
+than exposing Jitsi's own web container directly to the internet.
+
+**Docker Compose (`.env`)**
+- `PUBLIC_URL=https://meet.example.com`
+- `JVB_ADVERTISE_IPS=<your real public IPv4>` -- required regardless of
+  Cloudflare/any CDN in front of the web UI. Call media (JVB's UDP port) is a
+  raw RTP/UDP port that clients connect to directly; it never goes through
+  Cloudflare (Cloudflare's proxy only carries HTTP(S)/WebSocket on 80/443,
+  not arbitrary UDP), so JVB must advertise the real IP for ICE to work.
+- `JVB_PORT=<any free UDP port>` -- must be open/forwarded on your firewall.
+- `DISABLE_HTTPS=1` -- if Apache/nginx terminates TLS in front of the web
+  container (recommended, keeps cert management in one place with your other
+  vhosts), Jitsi's own web container should stay plain-HTTP internally.
+- Web container ports bound to `127.0.0.1` only (e.g. `HTTP_PORT=127.0.0.1:8000`)
+  so it's unreachable except through your reverse proxy.
+
+**Reverse proxy**
+The Jitsi web container's own nginx handles all app paths internally
+(`/http-bind`, `/xmpp-websocket`, static assets, etc.) -- your reverse proxy
+just needs to forward everything to it with WebSocket upgrade support for
+`/xmpp-websocket`. An Apache example:
+```apache
+RequestHeader set X-Forwarded-For expr=%{REMOTE_ADDR}
+RequestHeader set X-Forwarded-Proto "https"
+ProxyPreserveHost On
+RequestHeader set Connection "Upgrade" env=HTTP_UPGRADE
+ProxyPass /xmpp-websocket ws://127.0.0.1:8000/xmpp-websocket
+ProxyPassReverse /xmpp-websocket ws://127.0.0.1:8000/xmpp-websocket
+ProxyPass / http://127.0.0.1:8000/
+ProxyPassReverse / http://127.0.0.1:8000/
+```
+(nginx: proxy the same paths with `proxy_set_header Upgrade`/`Connection` on
+the `/xmpp-websocket` location.)
+
+**Plugin config** -- point it at your instance:
+```json
+"conference": {
+    "server": "meet.example.com",
+    "secure": false
+}
+```
+
+**`secure: true` (JWT-authenticated rooms)** -- this plugin sends the IRCd's
+own `EXTJWT` command to fetch a room-scoped JWT before joining, so it only
+works if:
+1. Your IRCd supports the `EXTJWT` command and is configured with a signing
+   key.
+2. Your Jitsi instance has `AUTH_TYPE=jwt` set, with `JWT_APP_SECRET`
+   matching that same signing key (`JWT_APP_ID` matching your IRCd's issuer).
+
+Without a matching IRCd, leave `secure: false` -- rooms are then only as
+private as their (unguessable-ish) generated room name, same as the public
+`meet.jit.si` default.
+
+**A note on moderation**: self-hosted Jitsi with no auth configured (the
+`secure: false` default above) already grants moderator to whoever joins an
+empty room first -- no channel-op lookup or extra plugin logic needed for
+"whoever starts the call is the moderator."
+
 ## License
 
 [ Licensed under the Apache License, Version 2.0](LICENSE).
